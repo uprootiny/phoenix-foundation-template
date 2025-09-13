@@ -1,0 +1,152 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  MIX_ENV: test
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Elixir
+      uses: erlef/setup-beam@v1
+      with:
+        elixir-version: '1.14'
+        otp-version: '25'
+
+    - name: Cache deps
+      uses: actions/cache@v3
+      with:
+        path: deps
+        key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-mix-
+
+    - name: Cache _build
+      uses: actions/cache@v3
+      with:
+        path: _build
+        key: ${{ runner.os }}-build-${{ hashFiles('**/mix.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-build-
+
+    - name: Install dependencies
+      run: mix deps.get
+
+    - name: Compile
+      run: mix compile --warnings-as-errors
+
+    - name: Run tests
+      run: mix test
+
+    - name: Run formatter check
+      run: mix format --check-formatted
+
+    - name: Run Credo
+      run: mix credo --strict
+
+    - name: Security check with Sobelow
+      run: mix sobelow --config
+
+  performance:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Elixir
+      uses: erlef/setup-beam@v1
+      with:
+        elixir-version: '1.14'
+        otp-version: '25'
+
+    - name: Install dependencies
+      run: mix deps.get
+
+    - name: Run performance benchmarks
+      run: mix performance.benchmark
+
+    - name: Trace critical paths
+      run: mix performance.trace
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results
+        path: telemetry/
+
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    needs: [test, performance]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Elixir
+      uses: erlef/setup-beam@v1
+      with:
+        elixir-version: '1.14'
+        otp-version: '25'
+
+    - name: Install dependencies
+      run: mix deps.get --only prod
+
+    - name: Compile for production
+      run: |
+        export MIX_ENV=prod
+        mix compile
+
+    - name: Build assets
+      run: mix assets.deploy
+
+    - name: Create release
+      run: |
+        export MIX_ENV=prod
+        mix release --overwrite
+
+    - name: Build Docker image
+      run: |
+        docker build -t phoenix-foundation:${{ github.sha }} .
+        docker tag phoenix-foundation:${{ github.sha }} phoenix-foundation:latest
+
+    - name: Collect telemetry
+      run: |
+        mkdir -p telemetry
+        echo "{\"build_time\":\"$(date --iso-8601=seconds)\",\"commit\":\"${{ github.sha }}\",\"status\":\"success\"}" > telemetry/build.json
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: release-artifacts
+        path: |
+          _build/prod/rel/
+          telemetry/
