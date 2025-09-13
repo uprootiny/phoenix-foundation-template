@@ -388,13 +388,13 @@ defmodule UniversalCriticalPathTracer do
 
   # Utility functions
   
-  defp format_duration(microseconds) when microseconds < 1_000 do
+  def format_duration(microseconds) when microseconds < 1_000 do
     "#{microseconds}μs"
   end
-  defp format_duration(microseconds) when microseconds < 1_000_000 do
+  def format_duration(microseconds) when microseconds < 1_000_000 do
     "#{Float.round(microseconds / 1_000, 1)}ms"
   end
-  defp format_duration(microseconds) do
+  def format_duration(microseconds) do
     "#{Float.round(microseconds / 1_000_000, 2)}s"
   end
 
